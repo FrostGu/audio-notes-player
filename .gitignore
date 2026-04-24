@@ -2,6 +2,8 @@
 
 # dependencies
 /node_modules
+/.venv-whisper
+/.cache
 /.pnp
 .pnp.js
 .yarn/install-state.gz

@@ -61,8 +61,9 @@ EOF
 ### Prerequisites
 
 - Node.js 18+
-- OpenAI API Key
 - FFmpeg (required for audio processing)
+- Python 3.9+ for local transcription with faster-whisper
+- OpenAI API Key or another compatible text model endpoint for AI shownotes
 
 #### Installing FFmpeg
 
@@ -76,6 +77,41 @@ sudo apt-get install ffmpeg
 # Windows
 choco install ffmpeg
 ```
+
+### Local Transcription Setup
+
+The app uses local `faster-whisper` transcription by default. The default runtime is:
+
+```txt
+model: small
+device: cpu
+compute type: int8
+```
+
+Create the Python environment and install the local transcription dependency:
+
+```bash
+python3 -m venv ~/.cache/audio-notes-player/whisper-venv
+~/.cache/audio-notes-player/whisper-venv/bin/python -m pip install -r scripts/requirements-whisper.txt
+```
+
+Download and initialize the default model:
+
+```bash
+~/.cache/audio-notes-player/whisper-venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8')"
+```
+
+Optional environment variables:
+
+```env
+TRANSCRIPTION_PROVIDER=local
+FASTER_WHISPER_MODEL=small
+FASTER_WHISPER_DEVICE=cpu
+FASTER_WHISPER_COMPUTE_TYPE=int8
+FASTER_WHISPER_PYTHON=/absolute/path/to/python
+```
+
+Set `TRANSCRIPTION_PROVIDER=openai` only if you want to use the OpenAI Whisper API path instead of local transcription.
 
 ### Installation
 
@@ -102,6 +138,8 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
 `API_KEY` and `BASE_URL` are also supported for compatibility.
+
+The OpenAI key is still used by the MVP shownotes generator. Local faster-whisper handles audio transcription.
 
 4. Start the development server:
 ```bash

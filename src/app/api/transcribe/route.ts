@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 import { logger } from '@/lib/utils';
 import { join, extname } from 'path';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import type { WhisperVerboseResponse, SrtEntry, TranscriptSegment } from '@/lib/core/types';
 import { convertSegmentsToSrtEntries, entriesToSrtString } from '@/lib/core/srt';
@@ -113,6 +113,12 @@ export async function POST(
       } catch (error) {
         // Error already handled in transcribeInChunks
         logger.error('[Transcription] Processing failed:', error);
+        await writer.write(
+          encoder.encode(JSON.stringify({
+            type: 'error',
+            error: error instanceof Error ? error.message : 'Failed to transcribe audio'
+          }) + '\n')
+        );
       } finally {
         try {
           await writer.close();
@@ -145,6 +151,93 @@ interface TranscribeResult {
   text: string;
   srt?: string;
   segments?: TranscriptSegment[];
+}
+
+function getFasterWhisperPython(): string {
+  const configuredPython = process.env.FASTER_WHISPER_PYTHON;
+  if (configuredPython) {
+    return configuredPython;
+  }
+
+  const venvDir = `${process.env.HOME || process.cwd()}/.cache/audio-notes-player/whisper-venv`;
+  const localPython = process.platform === 'win32'
+    ? `${venvDir}/Scripts/python.exe`
+    : `${venvDir}/bin/python`;
+
+  if (existsSync(localPython)) {
+    return localPython;
+  }
+
+  return 'python3';
+}
+
+async function transcribeWithFasterWhisper(
+  inputPath: string,
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  encoder: TextEncoder,
+  language: string = 'auto',
+): Promise<TranscribeResult> {
+  const model = process.env.FASTER_WHISPER_MODEL || 'small';
+  const device = process.env.FASTER_WHISPER_DEVICE || 'cpu';
+  const computeType = process.env.FASTER_WHISPER_COMPUTE_TYPE || 'int8';
+  const scriptPath = join(process.cwd(), 'scripts', 'faster_whisper_transcribe.py');
+  const pythonPath = getFasterWhisperPython();
+
+  await writer.write(
+    encoder.encode(JSON.stringify({
+      type: 'progress',
+      message: `Transcribing locally with faster-whisper (${model}, ${device}, ${computeType})...`
+    }) + '\n')
+  );
+
+  const output = execFileSync(
+    pythonPath,
+    [
+      scriptPath,
+      inputPath,
+      '--model',
+      model,
+      '--device',
+      device,
+      '--compute-type',
+      computeType,
+      '--language',
+      language,
+    ],
+    {
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024 * 50,
+    }
+  );
+
+  const parsed = JSON.parse(output) as TranscribeResult;
+  const segments = parsed.segments ?? [];
+  const srtEntries: SrtEntry[] = segments.map((segment, index) => ({
+    index: index + 1,
+    startTime: segment.startTime,
+    endTime: segment.endTime,
+    text: segment.text
+  }));
+  const srt = entriesToSrtString(srtEntries);
+
+  await writer.write(
+    encoder.encode(JSON.stringify({
+      type: 'partial',
+      transcript: parsed.text,
+      srt,
+      segments,
+      progress: {
+        current: 1,
+        total: 1
+      }
+    }) + '\n')
+  );
+
+  return {
+    text: parsed.text,
+    srt,
+    segments
+  };
 }
 
 async function transcribeInChunks(
@@ -183,6 +276,10 @@ async function transcribeInChunks(
     const inputPath = join(tempDir, `input${ext}`);
     const buffer = await audioFile.arrayBuffer();
     writeFileSync(inputPath, Buffer.from(buffer));
+
+    if (process.env.TRANSCRIPTION_PROVIDER !== 'openai') {
+      return await transcribeWithFasterWhisper(inputPath, writer, encoder, language);
+    }
 
     // Get audio duration using ffprobe
     const durationCmd = `ffprobe -i ${inputPath} -show_entries format=duration -v quiet -of csv="p=0"`;
