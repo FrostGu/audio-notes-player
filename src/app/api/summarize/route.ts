@@ -7,6 +7,7 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || process.env.API_KEY || process.env.NEXT_PUBLIC_OPENAI_API_KEY || 'missing-api-key',
   baseURL: process.env.OPENAI_BASE_URL || process.env.BASE_URL || process.env.NEXT_PUBLIC_BASE_URL
 });
+const notesModel = process.env.NOTES_MODEL || 'gpt-3.5-turbo';
 
 export async function POST(request: Request) {
   try {
@@ -54,7 +55,7 @@ Format with:
     logger.info('[Summarize] Sending request to OpenAI');
 
     const response = await client.chat.completions.create({
-      model: 'gpt-3.5-turbo',
+      model: notesModel,
       messages: allMessages,
       temperature: 0.7,
       max_tokens: 1000,
