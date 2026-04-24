@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 import { logger } from '@/lib/utils';
 import { join, extname } from 'path';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
-import { execFileSync, execSync } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import type { WhisperVerboseResponse, SrtEntry, TranscriptSegment } from '@/lib/core/types';
 import { convertSegmentsToSrtEntries, entriesToSrtString } from '@/lib/core/srt';
@@ -153,6 +153,24 @@ interface TranscribeResult {
   segments?: TranscriptSegment[];
 }
 
+type FasterWhisperEvent =
+  | {
+      type: 'metadata';
+      language?: string;
+      duration?: number;
+    }
+  | {
+      type: 'segment';
+      segment: TranscriptSegment;
+      text: string;
+    }
+  | {
+      type: 'complete';
+      text: string;
+      language?: string;
+      segments: TranscriptSegment[];
+    };
+
 function getFasterWhisperPython(): string {
   const configuredPython = process.env.FASTER_WHISPER_PYTHON;
   if (configuredPython) {
@@ -190,54 +208,145 @@ async function transcribeWithFasterWhisper(
     }) + '\n')
   );
 
-  const output = execFileSync(
-    pythonPath,
-    [
-      scriptPath,
-      inputPath,
-      '--model',
-      model,
-      '--device',
-      device,
-      '--compute-type',
-      computeType,
-      '--language',
-      language,
-    ],
-    {
-      encoding: 'utf8',
-      maxBuffer: 1024 * 1024 * 50,
-    }
-  );
-
-  const parsed = JSON.parse(output) as TranscribeResult;
-  const segments = parsed.segments ?? [];
-  const srtEntries: SrtEntry[] = segments.map((segment, index) => ({
-    index: index + 1,
-    startTime: segment.startTime,
-    endTime: segment.endTime,
-    text: segment.text
-  }));
-  const srt = entriesToSrtString(srtEntries);
-
-  await writer.write(
-    encoder.encode(JSON.stringify({
-      type: 'partial',
-      transcript: parsed.text,
-      srt,
-      segments,
-      progress: {
-        current: 1,
-        total: 1
+  return await new Promise<TranscribeResult>((resolve, reject) => {
+    const child = spawn(
+      pythonPath,
+      [
+        scriptPath,
+        inputPath,
+        '--model',
+        model,
+        '--device',
+        device,
+        '--compute-type',
+        computeType,
+        '--language',
+        language,
+      ],
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
       }
-    }) + '\n')
-  );
+    );
 
-  return {
-    text: parsed.text,
-    srt,
-    segments
-  };
+    const segments: TranscriptSegment[] = [];
+    const transcriptParts: string[] = [];
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    let completed = false;
+    let totalDuration = 0;
+
+    const writeProgress = async (event: FasterWhisperEvent) => {
+      if (event.type === 'metadata') {
+        totalDuration = event.duration ?? 0;
+        await writer.write(
+          encoder.encode(JSON.stringify({
+            type: 'progress',
+            message: event.language
+              ? `Detected language: ${event.language}. Streaming transcript segments...`
+              : 'Streaming transcript segments...'
+          }) + '\n')
+        );
+        return;
+      }
+
+      if (event.type === 'segment') {
+        segments.push(event.segment);
+        transcriptParts.push(event.segment.text);
+        const srtEntries: SrtEntry[] = segments.map((segment, index) => ({
+          index: index + 1,
+          startTime: segment.startTime,
+          endTime: segment.endTime,
+          text: segment.text
+        }));
+        const srt = entriesToSrtString(srtEntries);
+        const currentTime = event.segment.endTime;
+        const percent = totalDuration > 0
+          ? Math.min(100, Math.round((currentTime / totalDuration) * 100))
+          : undefined;
+
+        await writer.write(
+          encoder.encode(JSON.stringify({
+            type: 'partial',
+            transcript: event.text || transcriptParts.join(' '),
+            srt,
+            segments: [event.segment],
+            progress: {
+              current: segments.length,
+              total: totalDuration > 0 ? totalDuration : segments.length,
+              percent,
+              currentTime,
+              totalDuration
+            }
+          }) + '\n')
+        );
+        return;
+      }
+
+      completed = true;
+      const allSegments = event.segments ?? segments;
+      const srtEntries: SrtEntry[] = allSegments.map((segment, index) => ({
+        index: index + 1,
+        startTime: segment.startTime,
+        endTime: segment.endTime,
+        text: segment.text
+      }));
+      resolve({
+        text: event.text,
+        srt: entriesToSrtString(srtEntries),
+        segments: allSegments
+      });
+    };
+
+    const processLine = (line: string) => {
+      if (!line.trim()) return;
+
+      try {
+        const event = JSON.parse(line) as FasterWhisperEvent;
+        void writeProgress(event).catch(reject);
+      } catch (error) {
+        reject(new Error(`Failed to parse faster-whisper output: ${line}\n${error}`));
+      }
+    };
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdoutBuffer += chunk;
+      const lines = stdoutBuffer.split('\n');
+      stdoutBuffer = lines.pop() ?? '';
+      lines.forEach(processLine);
+    });
+
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      stderrBuffer += chunk;
+    });
+
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (stdoutBuffer.trim()) {
+        processLine(stdoutBuffer);
+      }
+
+      if (code !== 0) {
+        reject(new Error(stderrBuffer || `faster-whisper exited with code ${code}`));
+        return;
+      }
+
+      if (!completed) {
+        const srtEntries: SrtEntry[] = segments.map((segment, index) => ({
+          index: index + 1,
+          startTime: segment.startTime,
+          endTime: segment.endTime,
+          text: segment.text
+        }));
+        resolve({
+          text: transcriptParts.join(' '),
+          srt: entriesToSrtString(srtEntries),
+          segments
+        });
+      }
+    });
+  });
 }
 
 async function transcribeInChunks(

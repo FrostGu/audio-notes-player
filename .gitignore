@@ -46,3 +46,4 @@ src/**/*.js.map
 # temporary files
 /tmp/*
 !tmp/.gitkeep
+/temp/

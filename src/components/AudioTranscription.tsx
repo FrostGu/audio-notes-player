@@ -225,9 +225,7 @@ export default function AudioTranscription() {
 
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
-      const partialTranscripts: string[] = [];
-      const partialSrts: string[] = [];
-      const partialSegments: TranscriptSegment[][] = [];
+      let streamedSegments: TranscriptSegment[] = [];
 
       while (true) {
         const { value, done } = await reader.read();
@@ -244,15 +242,16 @@ export default function AudioTranscription() {
               setProgress(data.message);
               break;
             case 'partial':
-              partialTranscripts[data.progress.current - 1] = data.transcript;
-              setTranscription(partialTranscripts.join(' '));
+              setTranscription(data.transcript);
               if (data.srt) {
-                partialSrts[data.progress.current - 1] = data.srt;
-                setSrtContent(partialSrts.join('\n'));
+                setSrtContent(data.srt);
               }
               if (data.segments) {
-                partialSegments[data.progress.current - 1] = data.segments;
-                setSegments(partialSegments.flat());
+                streamedSegments = [...streamedSegments, ...data.segments];
+                setSegments(streamedSegments);
+              }
+              if (data.progress?.percent !== undefined) {
+                setProgress(`Transcribing... ${data.progress.percent}%`);
               }
               break;
             case 'complete':

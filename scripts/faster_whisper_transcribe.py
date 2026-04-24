@@ -6,6 +6,10 @@ import sys
 from faster_whisper import WhisperModel
 
 
+def emit(event: dict) -> None:
+    print(json.dumps(event, ensure_ascii=False), flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Transcribe audio with faster-whisper.")
     parser.add_argument("audio_path")
@@ -26,25 +30,41 @@ def main() -> int:
 
     transcript_segments = []
     transcript_parts = []
+    segment_index = 1
 
-    for index, segment in enumerate(segments, start=1):
+    emit({
+        "type": "metadata",
+        "language": info.language,
+        "duration": info.duration,
+    })
+
+    for segment in segments:
         text = segment.text.strip()
         if not text:
             continue
 
-        transcript_parts.append(text)
-        transcript_segments.append({
-            "id": f"segment-{index}",
+        transcript_segment = {
+            "id": f"segment-{segment_index}",
             "startTime": segment.start,
             "endTime": segment.end,
             "text": text,
+        }
+        segment_index += 1
+
+        transcript_parts.append(text)
+        transcript_segments.append(transcript_segment)
+        emit({
+            "type": "segment",
+            "segment": transcript_segment,
+            "text": " ".join(transcript_parts),
         })
 
-    json.dump({
+    emit({
+        "type": "complete",
         "text": " ".join(transcript_parts),
         "language": info.language,
         "segments": transcript_segments,
-    }, sys.stdout, ensure_ascii=False)
+    })
 
     return 0
 
