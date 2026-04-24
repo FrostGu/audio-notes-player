@@ -2,8 +2,9 @@
 const nextConfig = {
   output: 'standalone',
   experimental: {
-    // This is experimental but required for the build
-    serverActions: true,
+    serverActions: {
+      bodySizeLimit: '100mb',
+    },
   },
 }
 

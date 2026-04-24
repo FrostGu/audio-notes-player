@@ -12,8 +12,8 @@ import { convertSegmentsToSrtEntries, entriesToSrtString } from '@/lib/core/srt'
 export const maxDuration = 300; // 5 分钟超时
 
 const client = new OpenAI({
-  apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY,
-  baseURL: process.env.NEXT_PUBLIC_BASE_URL
+  apiKey: process.env.OPENAI_API_KEY || process.env.API_KEY || process.env.NEXT_PUBLIC_OPENAI_API_KEY || 'missing-api-key',
+  baseURL: process.env.OPENAI_BASE_URL || process.env.BASE_URL || process.env.NEXT_PUBLIC_BASE_URL
 });
 
 async function formatWithAI(

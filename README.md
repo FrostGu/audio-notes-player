@@ -1,7 +1,7 @@
-# PT - Audio Transcription Tool
+# Audio Notes Player
 ![](./public/demo.png)
 
-An audio transcription tool based on Next.js and OpenAI Whisper API, supporting audio file transcription and intelligent summary generation.
+An audio transcription and notes player based on Next.js and OpenAI Whisper API. It supports local audio playback, timestamped transcripts, AI-generated shownotes, chapters, highlights, and click-to-seek navigation.
 
 ## ✨ Features
 
@@ -9,6 +9,8 @@ An audio transcription tool based on Next.js and OpenAI Whisper API, supporting 
 - 🎙️ Support for Xiaoyuzhou podcast transcription
 - 📝 High-quality audio transcription using OpenAI Whisper API
 - 📊 AI-powered content summarization
+- 🧭 AI-generated shownotes with chapters and highlights
+- ⏱️ Click chapters, highlights, or transcript segments to seek audio playback
 - 🎨 Modern UI design
 - 💾 Download transcripts and summaries
 - 🎵 Built-in audio player
@@ -95,9 +97,11 @@ pnpm install
 3. Configure environment variables:
 Create a `.env.local` file and add:
 ```env
-API_KEY=your_openai_api_key
-BASE_URL=your_endpoint
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_BASE_URL=https://api.openai.com/v1
 ```
+
+`API_KEY` and `BASE_URL` are also supported for compatibility.
 
 4. Start the development server:
 ```bash
@@ -109,6 +113,15 @@ pnpm dev
 ```
 
 Visit [http://localhost:3000](http://localhost:3000) to view the app.
+
+### MVP Workflow
+
+1. Open the web app.
+2. Import audio from a local file, direct audio URL, or Xiaoyuzhou podcast URL.
+3. Click `Transcribe`.
+4. After transcription finishes, the app generates structured shownotes.
+5. Click any chapter, highlight, or transcript segment to jump the audio player to that timestamp.
+6. Use `MD` to export shownotes as Markdown, or use the transcript download controls for TXT/SRT.
 
 ### Docker Deployment
 
