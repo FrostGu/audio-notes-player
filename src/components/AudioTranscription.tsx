@@ -51,7 +51,6 @@ export default function AudioTranscription() {
   const [srtContent, setSrtContent] = useState('');
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [shownotes, setShownotes] = useState<Shownotes | null>(null);
-  const [currentTime, setCurrentTime] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isGeneratingNotes, setIsGeneratingNotes] = useState(false);
@@ -82,7 +81,6 @@ export default function AudioTranscription() {
     setSrtContent('');
     setSegments([]);
     setShownotes(null);
-    setCurrentTime(0);
     setError(null);
     setProgress('');
   };
@@ -441,7 +439,6 @@ export default function AudioTranscription() {
                 ref={audioRef}
                 controls
                 className="flex-1 w-full"
-                onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
               >
                 <source src={audioUrl} type={audioFile?.type} />
                 Your browser does not support the audio element.
@@ -634,40 +631,15 @@ export default function AudioTranscription() {
                 </CardHeader>
                 <CardContent>
                   <div className="prose prose-sm max-w-none dark:prose-invert">
-                    {segments.length > 0 ? (
-                      <div className="space-y-2 overflow-y-auto max-h-[600px] pr-2 scrollbar-thin">
-                        {segments.map((segment) => {
-                          const isActive = currentTime >= segment.startTime && currentTime <= segment.endTime;
-
-                          return (
-                            <button
-                              key={segment.id}
-                              onClick={() => seekTo(segment.startTime)}
-                              className={`block w-full rounded-md px-3 py-2 text-left text-base leading-7 tracking-wide transition ${
-                                isActive
-                                  ? 'bg-indigo-100 text-indigo-950 dark:bg-indigo-900/70 dark:text-indigo-50'
-                                  : 'hover:bg-slate-100 dark:hover:bg-gray-700'
-                              }`}
-                            >
-                              <span className="mr-3 inline-flex rounded-full bg-slate-200 px-2 py-1 text-xs font-medium text-slate-700 dark:bg-gray-700 dark:text-gray-200">
-                                {formatTime(segment.startTime)}
-                              </span>
-                              {segment.text}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div
-                        className="whitespace-pre-wrap text-base leading-7 tracking-wide overflow-y-auto max-h-[600px] scrollbar-thin"
-                        style={{
-                          fontSize: '1rem',
-                          lineHeight: '1.75',
-                        }}
-                      >
-                        {transcription}
-                      </div>
-                    )}
+                    <div
+                      className="whitespace-pre-wrap text-base leading-7 tracking-wide overflow-y-auto max-h-[600px] scrollbar-thin"
+                      style={{
+                        fontSize: '1rem',
+                        lineHeight: '1.75',
+                      }}
+                    >
+                      {transcription}
+                    </div>
                   </div>
                 </CardContent>
               </Card>
