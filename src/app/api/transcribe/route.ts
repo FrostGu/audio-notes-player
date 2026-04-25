@@ -189,6 +189,21 @@ function getFasterWhisperPython(): string {
   return 'python3';
 }
 
+function getModelLabel(model: string): string {
+  return model.includes('/')
+    ? model.split('/').filter(Boolean).pop() || model
+    : model;
+}
+
+function getInitialPrompt(language: string): string | undefined {
+  if (language === 'zh') {
+    return process.env.FASTER_WHISPER_INITIAL_PROMPT
+      || '以下是中文播客或访谈内容，请使用简体中文准确转写，保留专有名词和口语表达。';
+  }
+
+  return process.env.FASTER_WHISPER_INITIAL_PROMPT;
+}
+
 async function transcribeWithFasterWhisper(
   inputPath: string,
   writer: WritableStreamDefaultWriter<Uint8Array>,
@@ -198,31 +213,38 @@ async function transcribeWithFasterWhisper(
   const model = process.env.FASTER_WHISPER_MODEL || 'small';
   const device = process.env.FASTER_WHISPER_DEVICE || 'cpu';
   const computeType = process.env.FASTER_WHISPER_COMPUTE_TYPE || 'int8';
+  const initialPrompt = getInitialPrompt(language);
   const scriptPath = join(process.cwd(), 'scripts', 'faster_whisper_transcribe.py');
   const pythonPath = getFasterWhisperPython();
 
   await writer.write(
     encoder.encode(JSON.stringify({
       type: 'progress',
-      message: `Transcribing locally with faster-whisper (${model}, ${device}, ${computeType})...`
+      message: `Transcribing locally with faster-whisper (${getModelLabel(model)}, ${device}, ${computeType})...`
     }) + '\n')
   );
 
   return await new Promise<TranscribeResult>((resolve, reject) => {
+    const args = [
+      scriptPath,
+      inputPath,
+      '--model',
+      model,
+      '--device',
+      device,
+      '--compute-type',
+      computeType,
+      '--language',
+      language,
+    ];
+
+    if (initialPrompt) {
+      args.push('--initial-prompt', initialPrompt);
+    }
+
     const child = spawn(
       pythonPath,
-      [
-        scriptPath,
-        inputPath,
-        '--model',
-        model,
-        '--device',
-        device,
-        '--compute-type',
-        computeType,
-        '--language',
-        language,
-      ],
+      args,
       {
         stdio: ['ignore', 'pipe', 'pipe'],
       }

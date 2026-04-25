@@ -17,6 +17,7 @@ def main() -> int:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--compute-type", default="int8")
     parser.add_argument("--language", default="auto")
+    parser.add_argument("--initial-prompt", default=None)
     args = parser.parse_args()
 
     language = None if args.language == "auto" else args.language
@@ -25,6 +26,7 @@ def main() -> int:
         args.audio_path,
         beam_size=5,
         language=language,
+        initial_prompt=args.initial_prompt,
         vad_filter=True,
     )
 

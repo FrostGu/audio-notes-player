@@ -80,10 +80,18 @@ choco install ffmpeg
 
 ### Local Transcription Setup
 
-The app uses local `faster-whisper` transcription by default. The default runtime is:
+The app uses local `faster-whisper` transcription by default. The fastest MVP runtime is:
 
 ```txt
 model: small
+device: cpu
+compute type: int8
+```
+
+For better podcast accuracy, especially Chinese audio, use `medium + cpu + int8` if you can accept slower transcription:
+
+```txt
+model: medium
 device: cpu
 compute type: int8
 ```
@@ -95,10 +103,16 @@ python3 -m venv ~/.cache/audio-notes-player/whisper-venv
 ~/.cache/audio-notes-player/whisper-venv/bin/python -m pip install -r scripts/requirements-whisper.txt
 ```
 
-Download and initialize the default model:
+Download and initialize the default fast model:
 
 ```bash
 ~/.cache/audio-notes-player/whisper-venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8')"
+```
+
+Download and initialize the higher-accuracy CPU model:
+
+```bash
+~/.cache/audio-notes-player/whisper-venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('medium', device='cpu', compute_type='int8')"
 ```
 
 Optional environment variables:
@@ -109,7 +123,10 @@ FASTER_WHISPER_MODEL=small
 FASTER_WHISPER_DEVICE=cpu
 FASTER_WHISPER_COMPUTE_TYPE=int8
 FASTER_WHISPER_PYTHON=/absolute/path/to/python
+FASTER_WHISPER_INITIAL_PROMPT=以下是中文播客或访谈内容，请使用简体中文准确转写，保留专有名词和口语表达。
 ```
+
+Use the UI language selector. Choosing `中文` passes `zh` to faster-whisper and applies the default Chinese initial prompt.
 
 Set `TRANSCRIPTION_PROVIDER=openai` only if you want to use the OpenAI Whisper API path instead of local transcription.
 
