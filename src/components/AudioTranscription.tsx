@@ -122,6 +122,8 @@ export default function AudioTranscription() {
   const [progress, setProgress] = useState<string>('');
   const [enableSummary, setEnableSummary] = useState(false);
   const [downloadFormat, setDownloadFormat] = useState<'txt' | 'srt'>('txt');
+  const resumeCheckpoint = segments.at(-1);
+  const hasTranscriptCheckpoint = segments.length > 0;
 
   const languages = [
     { value: 'auto', label: 'Auto Detect' },
@@ -165,6 +167,8 @@ export default function AudioTranscription() {
   ];
 
   const resetAudioState = () => {
+    transcriptionAbortRef.current?.abort();
+    transcriptionAbortRef.current = null;
     if (audioUrl) {
       URL.revokeObjectURL(audioUrl);
     }
@@ -178,8 +182,19 @@ export default function AudioTranscription() {
     setIsPaused(false);
     setError(null);
     setProgress('');
+  };
+
+  const resetTranscriptionCheckpoint = () => {
     transcriptionAbortRef.current?.abort();
     transcriptionAbortRef.current = null;
+    setTranscription('');
+    setSummary('');
+    setSrtContent('');
+    setSegments([]);
+    setShownotes(null);
+    setIsPaused(false);
+    setError(null);
+    setProgress('');
   };
 
   const seekTo = (time: number) => {
@@ -262,12 +277,7 @@ export default function AudioTranscription() {
       }
       setAudioUrl('');
       setAudioFile(null);
-      // Reset transcription and summary
-      setTranscription('');
-      setSummary('');
-      setSrtContent('');
-      setSegments([]);
-      setShownotes(null);
+      resetTranscriptionCheckpoint();
 
       const response = await fetch('/api/audio', {
         method: 'POST',
@@ -351,6 +361,84 @@ export default function AudioTranscription() {
       const decoder = new TextDecoder();
       let messageBuffer = '';
 
+      const processMessage = async (message: string) => {
+        const data = JSON.parse(message);
+
+        switch (data.type) {
+          case 'progress':
+            setProgress(data.message);
+            break;
+          case 'partial':
+            if (data.segments) {
+              streamedSegments = mergeSegments(streamedSegments, data.segments);
+              setSegments(streamedSegments);
+              setTranscription(streamedSegments.map((segment) => segment.text).join(' '));
+              setSrtContent(buildSrt(streamedSegments));
+            } else if (!isResume) {
+              setTranscription(data.transcript);
+              if (data.srt) {
+                setSrtContent(data.srt);
+              }
+            }
+            if (data.progress?.percent !== undefined) {
+              setProgress(`Transcribing... ${data.progress.percent}%`);
+            }
+            break;
+          case 'complete':
+            let completedTranscript = data.transcript;
+            if (data.segments) {
+              const completedSegments = isResume
+                ? mergeSegments(initialSegments, data.segments)
+                : normalizeSegments(data.segments);
+              completedTranscript = completedSegments.map((segment: TranscriptSegment) => segment.text).join(' ');
+
+              streamedSegments = completedSegments;
+              setSegments(completedSegments);
+              setTranscription(completedTranscript);
+              setSrtContent(buildSrt(completedSegments));
+              await generateShownotes(completedTranscript, completedSegments);
+            } else if (!isResume && data.srt) {
+              setSrtContent(data.srt);
+            }
+            if (enableSummary) {
+              setProgress('Generating summary...');
+              try {
+                const summaryResponse = await fetch('/api/summarize', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    messages: [
+                      {
+                        role: "user",
+                        content: completedTranscript
+                      }
+                    ],
+                    language: selectedLanguage
+                  }),
+                });
+
+                if (!summaryResponse.ok) {
+                  throw new Error('Failed to generate summary');
+                }
+
+                const summaryData = await summaryResponse.json();
+                setSummary(summaryData.summary);
+              } catch (error) {
+                logger.error('Summary generation error:', error);
+                setError('Failed to generate summary');
+              }
+            }
+            setIsPaused(false);
+            setProgress('Completed');
+            break;
+          case 'error':
+            setError(data.error);
+            break;
+        }
+      };
+
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -361,81 +449,12 @@ export default function AudioTranscription() {
         const messages = lines.filter(Boolean);
 
         for (const message of messages) {
-          const data = JSON.parse(message);
-
-          switch (data.type) {
-            case 'progress':
-              setProgress(data.message);
-              break;
-            case 'partial':
-              if (data.segments) {
-                streamedSegments = mergeSegments(streamedSegments, data.segments);
-                setSegments(streamedSegments);
-                setTranscription(streamedSegments.map((segment) => segment.text).join(' '));
-                setSrtContent(buildSrt(streamedSegments));
-              } else if (!isResume) {
-                setTranscription(data.transcript);
-                if (data.srt) {
-                  setSrtContent(data.srt);
-                }
-              }
-              if (data.progress?.percent !== undefined) {
-                setProgress(`Transcribing... ${data.progress.percent}%`);
-              }
-              break;
-            case 'complete':
-              let completedTranscript = data.transcript;
-              if (data.segments) {
-                const completedSegments = isResume
-                  ? mergeSegments(initialSegments, data.segments)
-                  : normalizeSegments(data.segments);
-                completedTranscript = completedSegments.map((segment: TranscriptSegment) => segment.text).join(' ');
-
-                streamedSegments = completedSegments;
-                setSegments(completedSegments);
-                setTranscription(completedTranscript);
-                setSrtContent(buildSrt(completedSegments));
-                await generateShownotes(completedTranscript, completedSegments);
-              } else if (!isResume && data.srt) {
-                setSrtContent(data.srt);
-              }
-              if (enableSummary) {
-                setProgress('Generating summary...');
-                try {
-                  const summaryResponse = await fetch('/api/summarize', {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                      messages: [
-                        {
-                          role: "user",
-                          content: completedTranscript
-                        }
-                      ],
-                      language: selectedLanguage
-                    }),
-                  });
-
-                  if (!summaryResponse.ok) {
-                    throw new Error('Failed to generate summary');
-                  }
-
-                  const summaryData = await summaryResponse.json();
-                  setSummary(summaryData.summary);
-                } catch (error) {
-                  logger.error('Summary generation error:', error);
-                  setError('Failed to generate summary');
-                }
-              }
-              setProgress('Completed');
-              break;
-            case 'error':
-              setError(data.error);
-              break;
-          }
+          await processMessage(message);
         }
+      }
+
+      if (messageBuffer.trim()) {
+        await processMessage(messageBuffer);
       }
     } catch (error) {
       if (abortController.signal.aborted) {
@@ -647,6 +666,7 @@ export default function AudioTranscription() {
                   <select
                     value={selectedLanguage}
                     onChange={(e) => setSelectedLanguage(e.target.value)}
+                    disabled={isTranscribing || isPaused}
                     className="bg-transparent text-sm text-white outline-none"
                   >
                     {languages.map((lang) => (
@@ -675,25 +695,41 @@ export default function AudioTranscription() {
                     Pause
                   </Button>
                 ) : (
-                  <Button
-                    onClick={handleTranscribe}
-                    className="h-11 gap-2 bg-cyan-300 px-5 text-slate-950 shadow-lg shadow-cyan-500/20 hover:bg-cyan-200"
-                  >
-                    {isPaused ? (
-                      <>
-                        <Play className="h-4 w-4" />
-                        Resume
-                      </>
-                    ) : (
-                      <>
-                        <Wand2 className="h-4 w-4" />
-                        Transcribe
-                      </>
+                  <>
+                    {isPaused && (
+                      <Button
+                        onClick={resetTranscriptionCheckpoint}
+                        variant="outline"
+                        className="h-11 border-white/10 bg-white/10 px-5 text-white hover:bg-white/20 hover:text-white"
+                      >
+                        Start Over
+                      </Button>
                     )}
-                  </Button>
+                    <Button
+                      onClick={handleTranscribe}
+                      className="h-11 gap-2 bg-cyan-300 px-5 text-slate-950 shadow-lg shadow-cyan-500/20 hover:bg-cyan-200"
+                    >
+                      {isPaused ? (
+                        <>
+                          <Play className="h-4 w-4" />
+                          Resume
+                        </>
+                      ) : (
+                        <>
+                          <Wand2 className="h-4 w-4" />
+                          Transcribe
+                        </>
+                      )}
+                    </Button>
+                  </>
                 )}
               </div>
             </div>
+            {isPaused && resumeCheckpoint && (
+              <div className="mt-4 rounded-lg border border-amber-300/20 bg-amber-300/10 px-3 py-3 text-sm text-amber-50">
+                Transcription is paused at {formatTime(resumeCheckpoint.endTime)}. Resume will continue from this checkpoint and keep the existing transcript.
+              </div>
+            )}
             {progress && (
               <div className="mt-4 flex items-center gap-2 rounded-lg border border-cyan-300/15 bg-cyan-300/10 px-3 py-2 text-sm text-cyan-100">
                 {(isTranscribing || isGeneratingNotes) && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -857,6 +893,9 @@ export default function AudioTranscription() {
                   </div>
                   {segments.length > 0 && (
                     <p className="mt-3 text-xs text-slate-400">
+                      {isPaused && hasTranscriptCheckpoint
+                        ? `Paused checkpoint: ${formatTime(resumeCheckpoint?.endTime ?? 0)}. `
+                        : ''}
                       Timestamps are retained for SRT export and AI-generated chapters. Use the Shownotes panel for precise chapter jumps.
                     </p>
                   )}

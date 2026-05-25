@@ -20,6 +20,16 @@ function quoteShellPath(path: string): string {
   return `"${path.replace(/(["\\$`])/g, '\\$1')}"`;
 }
 
+function getAudioDuration(inputPath: string): number {
+  try {
+    const durationCmd = `ffprobe -i ${quoteShellPath(inputPath)} -show_entries format=duration -v quiet -of csv="p=0"`;
+    return Number.parseFloat(execSync(durationCmd).toString()) || 0;
+  } catch (error) {
+    logger.warn('[Transcription] Failed to read audio duration:', error);
+    return 0;
+  }
+}
+
 async function formatWithAI(
   text: string, 
 ): Promise<string> {
@@ -220,6 +230,7 @@ async function transcribeWithFasterWhisper(
   encoder: TextEncoder,
   language: string = 'auto',
   timeOffset: number = 0,
+  originalDuration: number = 0,
   abortSignal?: AbortSignal,
 ): Promise<TranscribeResult> {
   const model = process.env.FASTER_WHISPER_MODEL || 'small';
@@ -270,12 +281,16 @@ async function transcribeWithFasterWhisper(
     let stdoutBuffer = '';
     let stderrBuffer = '';
     let completed = false;
-    let totalDuration = 0;
+    let transcribeDuration = 0;
+    let totalDuration = originalDuration;
     let aborted = false;
 
     const abort = () => {
+      if (aborted) return;
       aborted = true;
-      child.kill('SIGTERM');
+      if (!child.killed) {
+        child.kill('SIGTERM');
+      }
       reject(new Error('Transcription paused'));
     };
 
@@ -288,7 +303,8 @@ async function transcribeWithFasterWhisper(
 
     const writeProgress = async (event: FasterWhisperEvent) => {
       if (event.type === 'metadata') {
-        totalDuration = event.duration ?? 0;
+        transcribeDuration = event.duration ?? 0;
+        totalDuration = originalDuration || transcribeDuration + timeOffset;
         await writer.write(
           encoder.encode(JSON.stringify({
             type: 'progress',
@@ -310,7 +326,7 @@ async function transcribeWithFasterWhisper(
           text: segment.text
         }));
         const srt = entriesToSrtString(srtEntries);
-        const currentTime = Math.max(0, event.segment.endTime - timeOffset);
+        const currentTime = Math.max(0, event.segment.endTime);
         const percent = totalDuration > 0
           ? Math.min(100, Math.round((currentTime / totalDuration) * 100))
           : undefined;
@@ -326,7 +342,8 @@ async function transcribeWithFasterWhisper(
               total: totalDuration > 0 ? totalDuration : segments.length,
               percent,
               currentTime,
-              totalDuration
+              totalDuration,
+              transcribeDuration
             }
           }) + '\n')
         );
@@ -445,6 +462,7 @@ async function transcribeInChunks(
 
     let transcribePath = inputPath;
     const effectiveResumeFrom = Math.max(0, resumeFrom);
+    const originalDuration = getAudioDuration(inputPath);
 
     if (effectiveResumeFrom > 0) {
       transcribePath = join(tempDir, `resume${ext}`);
@@ -452,12 +470,11 @@ async function transcribeInChunks(
     }
 
     if (process.env.TRANSCRIPTION_PROVIDER !== 'openai') {
-      return await transcribeWithFasterWhisper(transcribePath, writer, encoder, language, effectiveResumeFrom, abortSignal);
+      return await transcribeWithFasterWhisper(transcribePath, writer, encoder, language, effectiveResumeFrom, originalDuration, abortSignal);
     }
 
     // Get audio duration using ffprobe
-    const durationCmd = `ffprobe -i ${quoteShellPath(transcribePath)} -show_entries format=duration -v quiet -of csv="p=0"`;
-    const totalDuration = parseFloat(execSync(durationCmd).toString());
+    const totalDuration = getAudioDuration(transcribePath);
     const chunks = Math.ceil(totalDuration / chunkDuration);
 
     logger.info('[Transcription] Audio details:', {
