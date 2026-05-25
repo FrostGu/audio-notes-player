@@ -18,6 +18,7 @@ def main() -> int:
     parser.add_argument("--compute-type", default="int8")
     parser.add_argument("--language", default="auto")
     parser.add_argument("--initial-prompt", default=None)
+    parser.add_argument("--time-offset", type=float, default=0.0)
     args = parser.parse_args()
 
     language = None if args.language == "auto" else args.language
@@ -47,8 +48,8 @@ def main() -> int:
 
         transcript_segment = {
             "id": f"segment-{segment_index}",
-            "startTime": segment.start,
-            "endTime": segment.end,
+            "startTime": segment.start + args.time_offset,
+            "endTime": segment.end + args.time_offset,
             "text": text,
         }
         segment_index += 1

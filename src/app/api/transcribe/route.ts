@@ -16,6 +16,10 @@ const client = new OpenAI({
   baseURL: process.env.OPENAI_BASE_URL || process.env.BASE_URL || process.env.NEXT_PUBLIC_BASE_URL
 });
 
+function quoteShellPath(path: string): string {
+  return `"${path.replace(/(["\\$`])/g, '\\$1')}"`;
+}
+
 async function formatWithAI(
   text: string, 
 ): Promise<string> {
@@ -62,6 +66,10 @@ export async function POST(
     const file = formData.get('file');
     const language = formData.get('language') as string || 'auto';
     const outputFormat = formData.get('outputFormat') as string || 'text';
+    const resumeFromValue = formData.get('resumeFrom');
+    const resumeFrom = typeof resumeFromValue === 'string'
+      ? Math.max(0, Number.parseFloat(resumeFromValue) || 0)
+      : 0;
     
     if (!file) {
       return NextResponse.json(
@@ -99,7 +107,7 @@ export async function POST(
 
     (async () => {
       try {
-        const result = await transcribeInChunks(file, fileExtension, writer, encoder, language, outputFormat);
+        const result = await transcribeInChunks(file, fileExtension, writer, encoder, language, outputFormat, 300, resumeFrom, request.signal);
 
         // Send final result
         await writer.write(
@@ -113,12 +121,14 @@ export async function POST(
       } catch (error) {
         // Error already handled in transcribeInChunks
         logger.error('[Transcription] Processing failed:', error);
-        await writer.write(
-          encoder.encode(JSON.stringify({
-            type: 'error',
-            error: error instanceof Error ? error.message : 'Failed to transcribe audio'
-          }) + '\n')
-        );
+        if (!request.signal.aborted) {
+          await writer.write(
+            encoder.encode(JSON.stringify({
+              type: 'error',
+              error: error instanceof Error ? error.message : 'Failed to transcribe audio'
+            }) + '\n')
+          );
+        }
       } finally {
         try {
           await writer.close();
@@ -209,6 +219,8 @@ async function transcribeWithFasterWhisper(
   writer: WritableStreamDefaultWriter<Uint8Array>,
   encoder: TextEncoder,
   language: string = 'auto',
+  timeOffset: number = 0,
+  abortSignal?: AbortSignal,
 ): Promise<TranscribeResult> {
   const model = process.env.FASTER_WHISPER_MODEL || 'small';
   const device = process.env.FASTER_WHISPER_DEVICE || 'cpu';
@@ -241,6 +253,9 @@ async function transcribeWithFasterWhisper(
     if (initialPrompt) {
       args.push('--initial-prompt', initialPrompt);
     }
+    if (timeOffset > 0) {
+      args.push('--time-offset', String(timeOffset));
+    }
 
     const child = spawn(
       pythonPath,
@@ -256,6 +271,20 @@ async function transcribeWithFasterWhisper(
     let stderrBuffer = '';
     let completed = false;
     let totalDuration = 0;
+    let aborted = false;
+
+    const abort = () => {
+      aborted = true;
+      child.kill('SIGTERM');
+      reject(new Error('Transcription paused'));
+    };
+
+    if (abortSignal?.aborted) {
+      abort();
+      return;
+    }
+
+    abortSignal?.addEventListener('abort', abort, { once: true });
 
     const writeProgress = async (event: FasterWhisperEvent) => {
       if (event.type === 'metadata') {
@@ -281,7 +310,7 @@ async function transcribeWithFasterWhisper(
           text: segment.text
         }));
         const srt = entriesToSrtString(srtEntries);
-        const currentTime = event.segment.endTime;
+        const currentTime = Math.max(0, event.segment.endTime - timeOffset);
         const percent = totalDuration > 0
           ? Math.min(100, Math.round((currentTime / totalDuration) * 100))
           : undefined;
@@ -345,6 +374,10 @@ async function transcribeWithFasterWhisper(
 
     child.on('error', reject);
     child.on('close', (code) => {
+      abortSignal?.removeEventListener('abort', abort);
+      if (aborted) {
+        return;
+      }
       if (stdoutBuffer.trim()) {
         processLine(stdoutBuffer);
       }
@@ -378,7 +411,9 @@ async function transcribeInChunks(
   encoder: TextEncoder,
   language: string = 'auto',
   outputFormat: string = 'text',
-  chunkDuration: number = 300 // 5 minutes in seconds
+  chunkDuration: number = 300, // 5 minutes in seconds
+  resumeFrom: number = 0,
+  abortSignal?: AbortSignal
 ): Promise<TranscribeResult> {
   const sessionId = uuidv4();
   const baseDir = join(process.cwd(), 'temp');
@@ -408,12 +443,20 @@ async function transcribeInChunks(
     const buffer = await audioFile.arrayBuffer();
     writeFileSync(inputPath, Buffer.from(buffer));
 
+    let transcribePath = inputPath;
+    const effectiveResumeFrom = Math.max(0, resumeFrom);
+
+    if (effectiveResumeFrom > 0) {
+      transcribePath = join(tempDir, `resume${ext}`);
+      execSync(`ffmpeg -i ${quoteShellPath(inputPath)} -ss ${effectiveResumeFrom} -c copy ${quoteShellPath(transcribePath)} -y`);
+    }
+
     if (process.env.TRANSCRIPTION_PROVIDER !== 'openai') {
-      return await transcribeWithFasterWhisper(inputPath, writer, encoder, language);
+      return await transcribeWithFasterWhisper(transcribePath, writer, encoder, language, effectiveResumeFrom, abortSignal);
     }
 
     // Get audio duration using ffprobe
-    const durationCmd = `ffprobe -i ${inputPath} -show_entries format=duration -v quiet -of csv="p=0"`;
+    const durationCmd = `ffprobe -i ${quoteShellPath(transcribePath)} -show_entries format=duration -v quiet -of csv="p=0"`;
     const totalDuration = parseFloat(execSync(durationCmd).toString());
     const chunks = Math.ceil(totalDuration / chunkDuration);
 
@@ -424,10 +467,13 @@ async function transcribeInChunks(
     });
 
     for (let i = 0; i < chunks; i++) {
+      if (abortSignal?.aborted) {
+        throw new Error('Transcription paused');
+      }
       const start = i * chunkDuration;
       const outputPath = join(tempDir, `chunk-${i + 1}${ext}`);
       // Split audio using ffmpeg
-      const splitCmd = `ffmpeg -i ${inputPath} -ss ${start} -t ${chunkDuration} -c copy ${outputPath}`;
+      const splitCmd = `ffmpeg -i ${quoteShellPath(transcribePath)} -ss ${start} -t ${chunkDuration} -c copy ${quoteShellPath(outputPath)} -y`;
       execSync(splitCmd);
 
       // Add delay between chunks
@@ -467,7 +513,11 @@ async function transcribeInChunks(
             i,
             chunkDuration,
             globalSrtIndex
-          );
+          ).map((entry) => ({
+            ...entry,
+            startTime: entry.startTime + effectiveResumeFrom,
+            endTime: entry.endTime + effectiveResumeFrom
+          }));
           allSrtEntries.push(...chunkEntries);
           globalSrtIndex += chunkEntries.length;
 
@@ -553,7 +603,7 @@ async function transcribeInChunks(
     // Cleanup temp directory if it exists
     try {
       if (existsSync(tempDir)) {
-        execSync(`rm -rf ${tempDir}`);
+        execSync(`rm -rf ${quoteShellPath(tempDir)}`);
         logger.info(`[Transcription] Cleaned up temp directory: ${tempDir}`);
       }
     } catch (cleanupError) {
