@@ -1,10 +1,6 @@
 "use client"
-import AudioTranscription from '@/components/AudioTranscription'
+import { App } from '@/client/App'
 
 export default function Home() {
-  return (
-    <div className="min-h-screen">
-      <AudioTranscription />
-    </div>
-  )
+  return <App />
 }

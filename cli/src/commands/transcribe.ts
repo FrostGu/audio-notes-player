@@ -4,14 +4,13 @@ import { resolve } from 'path';
 import chalk from 'chalk';
 import { ProgressReporter } from '../utils/progress';
 
-// Import from core modules using relative paths
-import { transcribeAudio, transcribeAudioFile, TranscriptionProgress } from '../../../src/lib/core/transcription';
-import { generateSummary } from '../../../src/lib/core/summary';
+import { transcribe, TranscribeEvent } from '../../../src/lib/transcribe';
 import { downloadAudio } from '../../../src/lib/core/audio-downloader';
 
 export interface TranscribeOptions {
   summary: boolean;
   language: string;
+  provider?: 'local' | 'openai';
   output?: string;
   outputFormat: 'text' | 'json' | 'markdown' | 'srt';
   quiet: boolean;
@@ -61,70 +60,57 @@ export async function transcribeCommand(
 
   try {
     let transcript: string;
+    let segments: any[] = [];
     let srt: string | undefined;
+    let capturedSrt: string | undefined;
 
-    const progressCallback = (progressData: TranscriptionProgress) => {
-      if (progressData.type === 'progress') {
-        progress.update(progressData.message || 'Processing...');
-      } else if (progressData.type === 'partial' && progressData.progress) {
-        progress.progressBar(
-          progressData.progress.current,
-          progressData.progress.total,
-          'Transcribing'
-        );
-      }
-    };
+    const needSrt = options.outputFormat === 'srt';
 
-    // Determine input type
+    // Determine input type and get buffer
+    let buffer: Buffer;
+    let extension: string;
+
     if (isUrl(input)) {
-      // URL: need to download to buffer first
       progress.start('Downloading audio...');
       const downloadResult = await downloadAudio(input);
       progress.succeed(`Audio downloaded (${formatBytes(downloadResult.buffer.length)})`);
-
-      progress.start('Transcribing audio...');
-      const transcribeResult = await transcribeAudio(downloadResult.buffer, downloadResult.extension, {
-        language: options.language,
-        outputFormat: needSrt ? 'srt' : 'text',
-        onProgress: progressCallback
-      });
-      transcript = transcribeResult.text;
-      srt = transcribeResult.srt;
+      buffer = downloadResult.buffer;
+      extension = downloadResult.extension;
     } else {
-      // Local file: use file path directly (no memory copy)
       const filePath = resolve(input);
       if (!existsSync(filePath)) {
         throw new Error(`File not found: ${filePath}`);
       }
-
       const fileStats = await stat(filePath);
-
       progress.info(`File: ${filePath} (${formatBytes(fileStats.size)})`);
-      progress.start('Transcribing audio...');
-
-      const transcribeResult = await transcribeAudioFile(filePath, {
-        language: options.language,
-        outputFormat: needSrt ? 'srt' : 'text',
-        onProgress: progressCallback
-      });
-      transcript = transcribeResult.text;
-      srt = transcribeResult.srt;
+      const { readFile } = await import('fs/promises');
+      buffer = await readFile(filePath);
+      extension = filePath.split('.').pop() || 'mp3';
     }
+
+    progress.start('Transcribing audio...');
+
+    const transcribeResult = await transcribe(buffer, extension, {
+      language: options.language,
+      provider: options.provider,
+      onEvent: (event: TranscribeEvent) => {
+        if (event.type === 'segment') {
+          segments.push(event.segment);
+          progress.update(`Transcribed ${segments.length} segments...`);
+        } else if (event.type === 'progress') {
+          progress.update(event.message);
+        }
+      }
+    });
+
+    transcript = transcribeResult.text;
+    srt = transcribeResult.srt;
+    segments = transcribeResult.segments || [];
 
     progress.succeed('Transcription complete');
 
-    // Generate summary if requested (not available for SRT format)
-    let summary: string | null = null;
-    if (options.summary && !needSrt) {
-      progress.start('Generating AI summary...');
-      summary = await generateSummary(transcript, {
-        language: options.language
-      });
-      progress.succeed('Summary generated');
-    }
-
     // Format output
-    const output = formatOutput(transcript, summary, options.outputFormat, srt);
+    const output = formatOutput(transcript, null, options.outputFormat, srt);
 
     // Write output
     if (options.output) {

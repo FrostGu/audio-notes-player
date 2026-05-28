@@ -5,8 +5,8 @@ import './globals.css'
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'Audio Transcription',
-  description: 'Audio transcription and summarization tool',
+  title: '音频笔记',
+  description: '音频转写与笔记生成工具',
 }
 
 export default function RootLayout({

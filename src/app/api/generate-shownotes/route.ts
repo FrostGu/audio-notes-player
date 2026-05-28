@@ -2,12 +2,13 @@ import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import type { Chapter, Highlight, Shownotes, TranscriptSegment } from '@/lib/core/types';
 import { logger } from '@/lib/utils';
+import { getConfig } from '@/lib/config';
 
+const config = getConfig();
 const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || process.env.API_KEY || process.env.NEXT_PUBLIC_OPENAI_API_KEY || 'missing-api-key',
-  baseURL: process.env.OPENAI_BASE_URL || process.env.BASE_URL || process.env.NEXT_PUBLIC_BASE_URL
+  apiKey: config.openaiApiKey,
+  baseURL: config.openaiBaseUrl
 });
-const notesModel = process.env.NOTES_MODEL || 'gpt-3.5-turbo';
 
 type RequestBody = {
   transcript: string;
@@ -133,7 +134,7 @@ export async function POST(request: Request) {
 
     try {
       const response = await client.chat.completions.create({
-        model: notesModel,
+        model: config.notesModel,
         temperature: 0.2,
         max_tokens: 1800,
         messages: [

@@ -5,7 +5,6 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Input } from './ui/input';
 import { Button } from './ui/button';
 import {
-  Brain,
   Clock,
   Download,
   FileStack,
@@ -35,8 +34,24 @@ import {
 } from './ui/dialog';
 import { getFileExtension } from '@/lib/audio';
 import { logger } from '@/lib/utils';
-import { Switch } from './ui/switch';
 import type { Shownotes, TranscriptSegment } from '@/lib/core/types';
+
+interface ServerMessage {
+  type: string;
+  message?: string;
+  transcript?: string;
+  srt?: string;
+  segments?: TranscriptSegment[];
+  error?: string;
+  progress?: {
+    current?: number;
+    total?: number;
+    percent?: number;
+    currentTime?: number;
+    totalDuration?: number;
+    transcribeDuration?: number;
+  };
+}
 
 function formatTime(seconds: number): string {
   const safeSeconds = Math.max(0, Math.floor(seconds));
@@ -105,7 +120,6 @@ export default function AudioTranscription() {
   const [audioUrl, setAudioUrl] = useState('');
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [transcription, setTranscription] = useState('');
-  const [summary, setSummary] = useState('');
   const [srtContent, setSrtContent] = useState('');
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [shownotes, setShownotes] = useState<Shownotes | null>(null);
@@ -120,7 +134,6 @@ export default function AudioTranscription() {
   const [selectedLanguage, setSelectedLanguage] = useState('auto');
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<string>('');
-  const [enableSummary, setEnableSummary] = useState(false);
   const [downloadFormat, setDownloadFormat] = useState<'txt' | 'srt'>('txt');
   const resumeCheckpoint = segments.at(-1);
   const hasTranscriptCheckpoint = segments.length > 0;
@@ -138,7 +151,7 @@ export default function AudioTranscription() {
       icon: Podcast,
       accent: 'from-fuchsia-500 to-rose-500',
       onClick: () => {
-        resetAudioState();
+        resetTranscriptionState(true);
         setDialogType('podcast');
         setDialogOpen(true);
       },
@@ -149,7 +162,7 @@ export default function AudioTranscription() {
       icon: UploadCloud,
       accent: 'from-cyan-500 to-blue-500',
       onClick: () => {
-        resetAudioState();
+        resetTranscriptionState(true);
         document.getElementById('file-upload')?.click();
       },
     },
@@ -159,49 +172,35 @@ export default function AudioTranscription() {
       icon: Link,
       accent: 'from-amber-400 to-orange-500',
       onClick: () => {
-        resetAudioState();
+        resetTranscriptionState(true);
         setDialogType('url');
         setDialogOpen(true);
       },
     },
   ];
 
-  const resetAudioState = () => {
+  const resetTranscriptionState = (fullReset: boolean) => {
     transcriptionAbortRef.current?.abort();
     transcriptionAbortRef.current = null;
-    if (audioUrl) {
-      URL.revokeObjectURL(audioUrl);
+    setTranscription('');
+    setSrtContent('');
+    setSegments([]);
+    setShownotes(null);
+    setIsPaused(false);
+    setError(null);
+    setProgress('');
+    if (fullReset) {
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      setAudioUrl('');
+      setAudioFile(null);
     }
-    setAudioUrl('');
-    setAudioFile(null);
-    setTranscription('');
-    setSummary('');
-    setSrtContent('');
-    setSegments([]);
-    setShownotes(null);
-    setIsPaused(false);
-    setError(null);
-    setProgress('');
-  };
-
-  const resetTranscriptionCheckpoint = () => {
-    transcriptionAbortRef.current?.abort();
-    transcriptionAbortRef.current = null;
-    setTranscription('');
-    setSummary('');
-    setSrtContent('');
-    setSegments([]);
-    setShownotes(null);
-    setIsPaused(false);
-    setError(null);
-    setProgress('');
   };
 
   const seekTo = (time: number) => {
     if (!audioRef.current) return;
     audioRef.current.currentTime = time;
-    audioRef.current.play().catch((error) => {
-      logger.warn('Audio playback failed:', error);
+    audioRef.current.play().catch(() => {
+      setError('Please interact with the page first to enable audio playback');
     });
   };
 
@@ -240,7 +239,7 @@ export default function AudioTranscription() {
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    resetAudioState();
+    resetTranscriptionState(true);
     const file = e.target.files?.[0];
     if (file) {
       setUrlInput('');
@@ -277,7 +276,7 @@ export default function AudioTranscription() {
       }
       setAudioUrl('');
       setAudioFile(null);
-      resetTranscriptionCheckpoint();
+      resetTranscriptionState(false);
 
       const response = await fetch('/api/audio', {
         method: 'POST',
@@ -330,7 +329,6 @@ export default function AudioTranscription() {
     setError(null);
     if (!isResume) {
       setTranscription('');
-      setSummary('');
       setSrtContent('');
       setSegments([]);
       streamedSegments = [];
@@ -362,11 +360,22 @@ export default function AudioTranscription() {
       let messageBuffer = '';
 
       const processMessage = async (message: string) => {
-        const data = JSON.parse(message);
+        let data: ServerMessage;
+        try {
+          const parsed = JSON.parse(message);
+          if (typeof parsed !== 'object' || parsed === null) {
+            logger.warn('[Transcription] Invalid server message format:', message);
+            return;
+          }
+          data = parsed as ServerMessage;
+        } catch {
+          logger.warn('[Transcription] Failed to parse server message:', message);
+          return;
+        }
 
         switch (data.type) {
           case 'progress':
-            setProgress(data.message);
+            if (data.message) setProgress(data.message);
             break;
           case 'partial':
             if (data.segments) {
@@ -375,17 +384,15 @@ export default function AudioTranscription() {
               setTranscription(streamedSegments.map((segment) => segment.text).join(' '));
               setSrtContent(buildSrt(streamedSegments));
             } else if (!isResume) {
-              setTranscription(data.transcript);
-              if (data.srt) {
-                setSrtContent(data.srt);
-              }
+              if (data.transcript) setTranscription(data.transcript);
+              if (data.srt) setSrtContent(data.srt);
             }
             if (data.progress?.percent !== undefined) {
               setProgress(`Transcribing... ${data.progress.percent}%`);
             }
             break;
           case 'complete':
-            let completedTranscript = data.transcript;
+            let completedTranscript = data.transcript || '';
             if (data.segments) {
               const completedSegments = isResume
                 ? mergeSegments(initialSegments, data.segments)
@@ -400,41 +407,11 @@ export default function AudioTranscription() {
             } else if (!isResume && data.srt) {
               setSrtContent(data.srt);
             }
-            if (enableSummary) {
-              setProgress('Generating summary...');
-              try {
-                const summaryResponse = await fetch('/api/summarize', {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({
-                    messages: [
-                      {
-                        role: "user",
-                        content: completedTranscript
-                      }
-                    ],
-                    language: selectedLanguage
-                  }),
-                });
-
-                if (!summaryResponse.ok) {
-                  throw new Error('Failed to generate summary');
-                }
-
-                const summaryData = await summaryResponse.json();
-                setSummary(summaryData.summary);
-              } catch (error) {
-                logger.error('Summary generation error:', error);
-                setError('Failed to generate summary');
-              }
-            }
             setIsPaused(false);
             setProgress('Completed');
             break;
           case 'error':
-            setError(data.error);
+            if (data.error) setError(data.error);
             break;
         }
       };
@@ -676,16 +653,7 @@ export default function AudioTranscription() {
                     ))}
                   </select>
                 </label>
-                <div className="flex h-11 items-center gap-2 rounded-lg border border-white/10 bg-slate-950/60 px-3">
-                  <Switch
-                    id="enable-summary"
-                    checked={enableSummary}
-                    onCheckedChange={setEnableSummary}
-                  />
-                  <label htmlFor="enable-summary" className="whitespace-nowrap text-sm text-slate-200">
-                    AI Summary
-                  </label>
-                </div>
+
                 {isTranscribing ? (
                   <Button
                     onClick={pauseTranscription}
@@ -698,7 +666,7 @@ export default function AudioTranscription() {
                   <>
                     {isPaused && (
                       <Button
-                        onClick={resetTranscriptionCheckpoint}
+                        onClick={() => resetTranscriptionState(false)}
                         variant="outline"
                         className="h-11 border-white/10 bg-white/10 px-5 text-white hover:bg-white/20 hover:text-white"
                       >
@@ -739,7 +707,7 @@ export default function AudioTranscription() {
           </section>
         )}
 
-        {(transcription || summary || shownotes) && (
+        {(transcription || shownotes) && (
           <section className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[380px_1fr]">
             {shownotes && (
               <div className="space-y-6">
@@ -903,44 +871,7 @@ export default function AudioTranscription() {
               </Card>
             )}
 
-            {summary && (
-              <Card className="h-full border-white/10 bg-white/[0.08] text-white shadow-2xl shadow-black/20 backdrop-blur-xl lg:col-start-2">
-                <CardHeader>
-                  <CardTitle className="flex justify-between items-center">
-                    <div className="flex items-center gap-2">
-                      <Brain className="h-5 w-5 text-amber-200" />
-                      <span>Summary</span>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        const blob = new Blob([summary], { type: 'text/plain' });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = 'summary.txt';
-                        a.click();
-                        URL.revokeObjectURL(url);
-                      }}
-                      className="border-white/10 bg-white/10 text-white hover:bg-white/20 hover:text-white"
-                    >
-                      <Download className="mr-2 h-4 w-4" />
-                      Download
-                    </Button>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div>
-                    <div
-                      className="whitespace-pre-wrap text-base leading-7 text-slate-200 overflow-y-auto max-h-[600px] scrollbar-thin"
-                    >
-                      {summary}
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
+
           </section>
         )}
 

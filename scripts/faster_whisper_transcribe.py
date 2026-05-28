@@ -25,7 +25,7 @@ def main() -> int:
     model = WhisperModel(args.model, device=args.device, compute_type=args.compute_type)
     segments, info = model.transcribe(
         args.audio_path,
-        beam_size=5,
+        beam_size=8,
         language=language,
         initial_prompt=args.initial_prompt,
         vad_filter=True,
